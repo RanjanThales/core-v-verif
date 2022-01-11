@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-
+#include "corev_uvmt.h"
 // Enable debug messages, note that this will change test timing
 //#define DEBUG_MSG
 
@@ -22,12 +22,16 @@
 #define ERR_CODE_TEST_6      6
 #define ERR_CODE_TEST_7      7
 
-#define TIMER_REG_ADDR         ((volatile uint32_t *) 0x15000000)  
-#define TIMER_VAL_ADDR         ((volatile uint32_t *) 0x15000004) 
+#define ERR_CODE_INTR_CNT    8
+
+#define TIMER_REG_ADDR       ((volatile uint32_t *) (CV_VP_INTR_TIMER_BASE))
+#define TIMER_VAL_ADDR       ((volatile uint32_t *) (CV_VP_INTR_TIMER_BASE + 4))
 
 #define MSTATUS_MIE_BIT 3
 
 #define MCAUSE_IRQ_MASK 0x1f
+
+#define EVENT_INTR_TAKEN (1 << 6)
 
 #define IRQ_NUM 19
 #define IRQ_MASK 0xFFFF0888

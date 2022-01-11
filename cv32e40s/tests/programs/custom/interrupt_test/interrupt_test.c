@@ -12,6 +12,9 @@ volatile uint32_t active_test             = 0;
 volatile uint32_t nested_irq              = 0;
 volatile uint32_t nested_irq_valid        = 0;
 volatile uint32_t in_direct_handler       = 0;
+volatile uint32_t event;
+volatile uint32_t num_taken_interrupts;
+volatile uint32_t num_counted_interrupts;
 
 uint32_t IRQ_ID_PRIORITY [IRQ_NUM] = {
     FAST15_IRQ_ID   ,
@@ -79,13 +82,13 @@ void mm_ram_assert_irq(uint32_t mask, uint32_t cycle_delay) {
 }
 
 uint32_t random_num(uint32_t upper_bound, uint32_t lower_bound) {
-    uint32_t random_num = *((volatile int *)0x15001000);
+    uint32_t random_num = *((volatile int *) CV_VP_RANDOM_NUM_BASE);
     uint32_t num = (random_num  % (upper_bound - lower_bound + 1)) + lower_bound;
     return num;
 }
 
 uint32_t random_num32() {
-    uint32_t num = *((volatile int *)0x15001000);
+    uint32_t num = *((volatile int *) CV_VP_RANDOM_NUM_BASE);
     return num;
 }
 
@@ -94,7 +97,7 @@ extern void __no_irq_handler();
 void nested_irq_handler(uint32_t id) {
     // First stack mie, mepc and mstatus
     // Must be done in critical section with MSTATUS.MIE == 0
-    volatile uint32_t mie, mepc, mstatus;    
+    volatile uint32_t mie, mepc, mstatus;
     asm volatile("csrr %0, mie" : "=r" (mie));
     asm volatile("csrr %0, mepc" :"=r" (mepc));
     asm volatile("csrr %0, mstatus" : "=r" (mstatus));
@@ -112,18 +115,24 @@ void nested_irq_handler(uint32_t id) {
 
 void generic_irq_handler(uint32_t id) {
     asm volatile("csrr %0, mcause": "=r" (mmcause));
+    asm volatile("csrr %0, 0xB03" : "=r" (num_counted_interrupts));
     irq_id = id;
+
+    // Increment if interrupt
+    if (mmcause >> 31) {
+      num_taken_interrupts++;
+    }
 
     if (active_test == 2 || active_test == 3 || active_test == 4) {
         irq_id_q[irq_id_q_ptr++] = id;
-    } 
+    }
     if (active_test == 3) {
         if (nested_irq_valid) {
             nested_irq_valid = 0;
             mm_ram_assert_irq(0x1 << nested_irq, random_num(10,0));
         }
         nested_irq_handler(id);
-    }    
+    }
 }
 
 void m_software_irq_handler(void) { generic_irq_handler(SOFTWARE_IRQ_ID); }
@@ -150,6 +159,9 @@ void m_fast15_irq_handler(void) { generic_irq_handler(FAST15_IRQ_ID); }
 __attribute__((interrupt ("machine"))) void u_sw_direct_irq_handler(void)  {
     in_direct_handler = 1;
     asm volatile("csrr %0, mcause" : "=r" (mmcause));
+    if (mmcause >> 31) {
+      num_taken_interrupts++;
+    }
 }
 
     asm (
@@ -161,7 +173,7 @@ __attribute__((interrupt ("machine"))) void u_sw_direct_irq_handler(void)  {
 	    "j __no_irq_handler\n"
 	    "j __no_irq_handler\n"
 	    "j m_software_irq_handler\n"
-	    "j __no_irq_handler\n"        
+	    "j __no_irq_handler\n"
         "j __no_irq_handler\n"
 	    "j __no_irq_handler\n"
 	    "j m_timer_irq_handler\n"
@@ -196,7 +208,7 @@ __attribute__((interrupt ("machine"))) void u_sw_direct_irq_handler(void)  {
         ".option norvc\n"
         ".align 8\n"
         "alt_direct_vector_table:\n"
-	    "j u_sw_direct_irq_handler\n"	
+	    "j u_sw_direct_irq_handler\n"
     );
 
     asm (
@@ -205,60 +217,84 @@ __attribute__((interrupt ("machine"))) void u_sw_direct_irq_handler(void)  {
         ".align 8\n"
         "alt_direct_ecall_table:\n"
         "wfi\n"
-	    "j u_sw_irq_handler\n"	
+	    "j u_sw_irq_handler\n"
     );
 
 int main(int argc, char *argv[]) {
     int retval;
 
-    // Test 1
-    retval = test1();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    num_counted_interrupts = 0;
+    num_taken_interrupts   = 0;
+
+    // Enable interrupt performance counter (mhpmcounter3)
+    event = EVENT_INTR_TAKEN;
+    __asm__ volatile ("csrw 0x323, %0 " :: "r"(event));
+    __asm__ volatile ("csrwi 0xB03, 0x0");
+    __asm__ volatile ("csrwi 0x320, 0x0");
+
+  // Test 1
+  retval = test1();
+  if (retval != EXIT_SUCCESS) {
+    return retval;
+  }
 
     // Test 2
     retval = test2();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    if (retval != EXIT_SUCCESS) {
+      return retval;
+    }
 
     // Test 3
     retval = test3();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    if (retval != EXIT_SUCCESS) {
+      return retval;
+    }
 
     // Test 4
     retval = test4();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    if (retval != EXIT_SUCCESS) {
+      return retval;
+    }
 
     // Test 5
     retval = test5();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    if (retval != EXIT_SUCCESS) {
+      return retval;
+    }
 
     // Test 6
     retval = test6();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    if (retval != EXIT_SUCCESS) {
+      return retval;
+    }
 
     // Repeat test1 (restore vector mode)
     retval = test7();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    if (retval != EXIT_SUCCESS) {
+      return retval;
+    }
 
     // Try to write mcause (for coverage)
     retval = test8();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    if (retval != EXIT_SUCCESS) {
+      return retval;
+    }
 
     // Test 9
     retval = test9();
-    if (retval != EXIT_SUCCESS)
-        return retval;
+    if (retval != EXIT_SUCCESS) {
+      return retval;
+    }
 
     // Clear MIE for final WFI
     mie_disable_all();
-    
+
+    // Check that the interrupt taken counter
+    if (num_counted_interrupts != num_taken_interrupts) {
+      printf("mhpmcounter3 (number of events taken) does not match actual interrupts taken: %0d != %0d\n", (int)num_counted_interrupts, (int)num_taken_interrupts);
+      return ERR_CODE_INTR_CNT;
+    }
+
     return EXIT_SUCCESS;
 }
 
@@ -295,13 +331,13 @@ int test1_impl(int direct_mode) {
 
                 in_direct_handler = 0;
                 mmcause = 0;
-                mm_ram_assert_irq(0x1 << i, 1);    
+                mm_ram_assert_irq(0x1 << i, 1);
 
                 if (((0x1 << i) & IRQ_MASK) && mie && gmie) {
-                    // Interrupt is valid and enabled 
+                    // Interrupt is valid and enabled
                     // wait for the irq to be served
                     while (!mmcause);
-                
+
                     if ((mmcause & (0x1 << 31)) == 0) {
                         printf("MCAUSE[31] was not set: mmcause = 0x%08lx\n", (uint32_t) mmcause);
 
@@ -310,8 +346,8 @@ int test1_impl(int direct_mode) {
                     if ((mmcause & MCAUSE_IRQ_MASK) != i) {
                         printf("MCAUSE reported wrong irq, exp = %lu, act = 0x%08lx", i, mmcause);
 
-                        return ERR_CODE_TEST_1;                    
-                    }                    
+                        return ERR_CODE_TEST_1;
+                    }
                 } else {
                     // Unimplemented interrupts, or is a masked irq, delay a bit, waiting for any mmcause
                     for (int j = 0; j < 20; j++) {
@@ -319,9 +355,9 @@ int test1_impl(int direct_mode) {
                             printf("MMCAUSE = 0x%08lx when unimplmented interrupt %lu first", mmcause, i);
                             return ERR_CODE_TEST_1;
                         }
-                    }                    
+                    }
                 }
-                
+
                 // Check MIP
                 // For unimplemented irqs, this should always be 0
                 // For masked irqs, this should always be 0
@@ -338,7 +374,7 @@ int test1_impl(int direct_mode) {
                     if (mip & (0x1 << i)) {
                         printf("MIP for unimplemented IRQ[%lu] set\n", i);
                         return ERR_CODE_TEST_1;
-                    }                    
+                    }
                 }
 
                 // Check flag at direct mode handler
@@ -354,7 +390,7 @@ int test1_impl(int direct_mode) {
                 }
 
                 // Clear vp irq
-                mm_ram_assert_irq(0, 0);   
+                mm_ram_assert_irq(0, 0);
             }
         }
     }
@@ -369,13 +405,13 @@ int test1_impl(int direct_mode) {
 int test2() {
     printf("TEST 2 - TRIGGER ALL IRQS AT ONCE:\n");
     active_test = 2;
-    
+
     // Clear VP irq
-    mm_ram_assert_irq(0, 0); 
-    
+    mm_ram_assert_irq(0, 0);
+
     // Enable all interrupts (MIE and MSTATUS.MIE)
     uint32_t mie = (uint32_t) -1;
-    asm volatile("csrw mie, %0" : : "r" (mie));            
+    asm volatile("csrw mie, %0" : : "r" (mie));
     mstatus_mie_enable();
     irq_id_q_ptr = 0;
 
@@ -401,8 +437,8 @@ int test2() {
 
 // Test 3 will create nested interrupts
 int test3() {
-    printf("TEST 3 - NESTED INTERRUPTS:\n"); 
-    
+    printf("TEST 3 - NESTED INTERRUPTS:\n");
+
     // Test 3 is a nested interrupt test
     active_test = 3;
 
@@ -421,7 +457,7 @@ int test3() {
 
         irq_id_q_ptr = 0;
         nested_irq = irq[1];
-        nested_irq_valid = 1;    
+        nested_irq_valid = 1;
 
 #ifdef DEBUG_MSG
         printf("TEST3: Test nested irqs %lu and %lu\n", irq[0], irq[1]);
@@ -453,13 +489,13 @@ int test3() {
 // Tests that IRQ handler is not entered after WFI unless MSTATUS.MIE is set
 int test4() {
     printf("TEST 4 - WFI\n");
-    
+
     // Test 4 is a WFI test
     active_test = 4;
 
     // Iterate through multiple loops
     for (int irq = 0; irq < 32; irq++) {
-        if (!(((0x1 << irq) & IRQ_MASK))) 
+        if (!(((0x1 << irq) & IRQ_MASK)))
             continue;
 
         for (uint32_t gmie = 0; gmie <= 1; gmie++) {
@@ -469,7 +505,7 @@ int test4() {
             mie_disable_all();
             mm_ram_assert_irq(0, 0);
 
-            // Select a wakeup interrupt and enable only it            
+            // Select a wakeup interrupt and enable only it
             mie_enable(irq);
 
             // Prep the IRQ ID Q to be empty, we need to detect if any interrupts (or none) taken
@@ -491,9 +527,9 @@ int test4() {
 
             // Random assert "enabled" irq
             mm_ram_assert_irq(rand_irq | (0x1 << irq), (random_num32() & 0x3f) + 32);
-            asm volatile("wfi");            
-            
-        
+            asm volatile("wfi");
+
+
             if (gmie) {
                 // Expected an interrupt taken
                 if (irq_id_q[0] != irq) {
@@ -526,7 +562,7 @@ int test5() {
     asm volatile("csrw mtvec, %0" : : "r" ((uint32_t) alt_vector_table | (save_mtvec & 0x3)));
 
     retval = test1_impl(0);
-    asm volatile("csrw mtvec, %0" : : "r" (save_mtvec)); 
+    asm volatile("csrw mtvec, %0" : : "r" (save_mtvec));
     if (retval != EXIT_SUCCESS) {
         return ERR_CODE_TEST_5;
     }
@@ -548,7 +584,7 @@ int test6() {
     asm volatile("csrw mtvec, %0" : : "r" ((uint32_t) alt_direct_vector_table)); // Leave mode at 0
 
     retval = test1_impl(1);
-    asm volatile("csrw mtvec, %0" : : "r" (save_mtvec)); 
+    asm volatile("csrw mtvec, %0" : : "r" (save_mtvec));
     if (retval != EXIT_SUCCESS) {
         return ERR_CODE_TEST_6;
     }
@@ -615,16 +651,16 @@ int test9() {
 
     // Iterate through multiple loops
     for (int irq = 0; irq < 32; irq++) {
-        if (!(((0x1 << irq) & IRQ_MASK))) 
+        if (!(((0x1 << irq) & IRQ_MASK)))
             continue;
 
         for (uint32_t gmie = 0; gmie <= 0; gmie++) {
             uint32_t rand_irq;
 
             // Clear MIE and all pending irqs
-            mie_disable_all();            
+            mie_disable_all();
 
-            // Select a wakeup interrupt and enable only it            
+            // Select a wakeup interrupt and enable only it
             mie_enable(irq);
 
             // Prep the IRQ ID Q to be empty, we need to detect if any interrupts (or none) taken
@@ -647,7 +683,7 @@ int test9() {
             // Random assert "enabled" irq
             mm_ram_assert_irq(rand_irq | (0x1 << irq), (random_num32() & 0x3f) + 64);
             asm volatile("ecall");
-                    
+
             if (gmie) {
                 // Expected an interrupt taken
                 if (irq_id_q[0] != irq) {
@@ -664,7 +700,7 @@ int test9() {
         }
     }
 
-    asm volatile("csrw mtvec, %0" : : "r" (save_mtvec)); 
+    asm volatile("csrw mtvec, %0" : : "r" (save_mtvec));
 
     return EXIT_SUCCESS;
 }

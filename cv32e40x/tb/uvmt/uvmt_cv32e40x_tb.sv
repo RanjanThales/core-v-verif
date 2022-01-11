@@ -94,7 +94,16 @@ module uvmt_cv32e40x_tb;
                              .INSTR_RDATA_WIDTH (ENV_PARAM_INSTR_DATA_WIDTH),
                              .RAM_ADDR_WIDTH    (ENV_PARAM_RAM_ADDR_WIDTH)
                             )
-                            dut_wrap (.*);
+                            dut_wrap (
+                              .clknrst_if(clknrst_if),
+                              .interrupt_if(interrupt_if),
+                              .vp_status_if(vp_status_if),
+                              .core_cntrl_if(core_cntrl_if),
+                              .core_status_if(core_status_if),
+                              .obi_instr_if_i(obi_instr_if_i),
+                              .obi_data_if_i(obi_data_if_i),
+                              .fencei_if_i(fencei_if_i),
+                              .*);
 
   bind cv32e40x_wrapper
     uvma_rvfi_instr_if#(uvme_cv32e40x_pkg::ILEN,
@@ -104,7 +113,7 @@ module uvmt_cv32e40x_tb;
                                                                    .rvfi_valid(rvfi_i.rvfi_valid[0]),
                                                                    .rvfi_order(rvfi_i.rvfi_order[uvma_rvfi_pkg::ORDER_WL*0+:uvma_rvfi_pkg::ORDER_WL]),
                                                                    .rvfi_insn(rvfi_i.rvfi_insn[uvme_cv32e40x_pkg::ILEN*0+:uvme_cv32e40x_pkg::ILEN]),
-                                                                   .rvfi_trap(rvfi_i.rvfi_trap[0]),
+                                                                   .rvfi_trap(rvfi_i.rvfi_trap[11:0]),
                                                                    .rvfi_halt(rvfi_i.rvfi_halt[0]),
                                                                    .rvfi_intr(rvfi_i.rvfi_intr[0]),
                                                                    .rvfi_dbg(rvfi_i.rvfi_dbg),
@@ -330,15 +339,36 @@ module uvmt_cv32e40x_tb;
                                                       .mie_q(cs_registers_i.mie_q),
                                                       .mstatus_mie(cs_registers_i.mstatus_q.mie),
                                                       .mtvec_mode_q(cs_registers_i.mtvec_q.mode),
+                                                      .if_stage_instr_req_o(if_stage_i.m_c_obi_instr_if.s_req.req),
                                                       .if_stage_instr_rvalid_i(if_stage_i.m_c_obi_instr_if.s_rvalid.rvalid),
                                                       .if_stage_instr_rdata_i(if_stage_i.m_c_obi_instr_if.resp_payload.rdata),
-                                                      .id_stage_instr_valid_i(wb_stage_i.instr_valid),
-                                                      .id_stage_instr_rdata_i(wb_stage_i.ex_wb_pipe_i.instr.bus_resp.rdata),
+                                                      .alignbuf_outstanding(if_stage_i.prefetch_unit_i.alignment_buffer_i.outstanding_cnt_q),
+                                                      .ex_stage_instr_valid(ex_stage_i.id_ex_pipe_i.instr_valid),
+                                                      .wb_stage_instr_valid_i(wb_stage_i.instr_valid),
+                                                      .wb_stage_instr_rdata_i(wb_stage_i.ex_wb_pipe_i.instr.bus_resp.rdata),
+                                                      .wb_stage_instr_err_i(wb_stage_i.ex_wb_pipe_i.instr.bus_resp.err),
                                                       .branch_taken_ex(controller_i.controller_fsm_i.branch_taken_ex),
                                                       .debug_mode_q(controller_i.controller_fsm_i.debug_mode_q),
                                                       .irq_ack_o(core_i.irq_ack),
                                                       .irq_id_o(core_i.irq_id),
                                                       .*);
+
+  // Fence.i assertions
+
+  bind cv32e40x_wrapper
+    uvmt_cv32e40x_fencei_assert  fencei_assert_i (
+      .wb_valid (core_i.wb_stage_i.wb_valid),
+      .wb_instr_valid (core_i.ex_wb_pipe.instr_valid),
+      .wb_fencei_insn (core_i.ex_wb_pipe.fencei_insn),
+      .wb_pc (core_i.ex_wb_pipe.pc),
+      .wb_rdata (core_i.ex_wb_pipe.instr.bus_resp.rdata),
+
+      .rvfi_valid (rvfi_i.rvfi_valid),
+      .rvfi_intr (rvfi_i.rvfi_intr),
+      .rvfi_dbg_mode (rvfi_i.rvfi_dbg_mode),
+
+      .*
+    );
 
 
   // Debug assertion and coverage interface
@@ -365,16 +395,18 @@ module uvmt_cv32e40x_tb;
       .debug_req_i(core_i.controller_i.controller_fsm_i.debug_req_i),
       .debug_req_q(core_i.controller_i.controller_fsm_i.debug_req_q),
       .pending_debug(core_i.controller_i.controller_fsm_i.pending_debug),
+      .pending_nmi(core_i.controller_i.controller_fsm_i.pending_nmi),
+      .nmi_allowed(core_i.controller_i.controller_fsm_i.nmi_allowed),
       .debug_mode_q(core_i.controller_i.controller_fsm_i.debug_mode_q),
       .dcsr_q(core_i.cs_registers_i.dcsr_q),
       .depc_q(core_i.cs_registers_i.dpc_q),
       .depc_n(core_i.cs_registers_i.dpc_n),
-      .mcause_q({core_i.cs_registers_i.mcause_q[31], core_i.cs_registers_i.mcause_q[4:0]}),
+      .mcause_q(core_i.cs_registers_i.mcause_q),
       .mtvec(core_i.cs_registers_i.mtvec_q),
       .mepc_q(core_i.cs_registers_i.mepc_q),
       .tdata1(core_i.cs_registers_i.tmatch_control_q),
       .tdata2(core_i.cs_registers_i.tmatch_value_q),
-      .trigger_match_i(core_i.controller_i.controller_fsm_i.trigger_match_in_wb),  // TODO:ropeders
+      .trigger_match_in_wb(core_i.controller_i.controller_fsm_i.trigger_match_in_wb),
       .mcountinhibit_q(core_i.cs_registers_i.mcountinhibit_q),
       .mcycle(core_i.cs_registers_i.mhpmcounter_q[0]),
       .minstret(core_i.cs_registers_i.mhpmcounter_q[2]),
@@ -396,6 +428,7 @@ module uvmt_cv32e40x_tb;
       .irq_id_o(core_i.irq_id),
       .dm_halt_addr_i(core_i.dm_halt_addr_i),
       .dm_exception_addr_i(core_i.dm_exception_addr_i),
+      .nmi_addr_i(core_i.nmi_addr_i),
       .core_sleep_o(core_i.core_sleep_o),
       .irq_i(core_i.irq_i),
       .pc_set(core_i.ctrl_fsm.pc_set),
@@ -729,5 +762,3 @@ endmodule : uvmt_cv32e40x_tb
 `default_nettype wire
 
 `endif // __UVMT_CV32E40X_TB_SV__
-
-

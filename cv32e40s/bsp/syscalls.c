@@ -26,15 +26,16 @@
 #include <errno.h>
 #include <machine/syscall.h>
 #include <assert.h>
+#include "corev_uvmt.h"
 #undef errno
 extern int errno;
 
 /* write to this reg for outputting strings */
-#define STDOUT_REG 0x10000000
+#define STDOUT_REG CV_VP_VIRTUAL_PRINTER_BASE
 /* write test result of program to this reg */
-#define RESULT_REG 0x20000000
+#define RESULT_REG (CV_VP_STATUS_FLAGS_BASE)
 /* write exit value of program to this reg */
-#define EXIT_REG 0x20000004
+#define EXIT_REG (CV_VP_STATUS_FLAGS_BASE + 4)
 
 #define STDOUT_FILENO 1
 
@@ -109,7 +110,7 @@ int _execve(const char *name, char *const argv[], char *const env[])
 void _exit(int exit_status)
 {
   *(volatile int *)EXIT_REG = exit_status;
-  asm volatile("wfi");
+  __asm__ volatile("wfi");
   /* _exit should not return */
   while (1) {};
 }
@@ -272,9 +273,11 @@ int _brk(void *addr)
 void *_sbrk(ptrdiff_t incr)
 {
   char *old_brk = brk;
-  register long sp asm("sp");
+  volatile uint32_t sp;
 
   char *new_brk = brk += incr;
+  __asm__ volatile("mv %0, x2" : "=r"(sp) : : );
+
   if (new_brk < (char *) sp && new_brk < __heap_end)
     {
       brk = new_brk;
