@@ -38,6 +38,7 @@ class uvma_rvfi_instr_mon_c#(int ILEN=DEFAULT_ILEN,
 
    // State of monitor
    bit                last_dcsr_nmip = 0;
+   bit [uvma_rvfi_csr_seq_item_c::XLEN-1:0] dcsr_ret_data;
 
    string log_tag = "RVFIMONLOG";
 
@@ -139,6 +140,7 @@ task uvma_rvfi_instr_mon_c::monitor_rvfi_instr();
          mon_trn.halt      = cntxt.instr_vif[nret_id].mon_cb.rvfi_halt;
          mon_trn.dbg       = cntxt.instr_vif[nret_id].mon_cb.rvfi_dbg;
          mon_trn.dbg_mode  = cntxt.instr_vif[nret_id].mon_cb.rvfi_dbg_mode;
+         mon_trn.nmip      = cntxt.instr_vif[nret_id].mon_cb.rvfi_nmip;
          mon_trn.intr      = cntxt.instr_vif[nret_id].mon_cb.rvfi_intr;
          $cast(mon_trn.mode, cntxt.instr_vif[nret_id].mon_cb.rvfi_mode);
          mon_trn.ixl       = cntxt.instr_vif[nret_id].mon_cb.rvfi_ixl;
@@ -180,34 +182,43 @@ task uvma_rvfi_instr_mon_c::monitor_rvfi_instr();
             mon_trn.csrs[csr] = csr_trn;
          end
 
-         // Determine if interrupt is nmi or interrupt
-         mon_trn.insn_nmi        = 0;
-         mon_trn.insn_interrupt  = 0;
+         // Decode interrupts that need to be communicated to ISS (external or NMI bus faults)
+         if (mon_trn.intr) begin
+            // The cause of the interrupt should be in the "rdata" field of the mcause CSR RVFI port
+            bit [XLEN-1:0] csr_mcause = mon_trn.csrs["mcause"].rdata;
 
-         // FIXME:strichmo:This should be incorporated into interrupts
-         if (cfg.nmi_handler_enabled && mon_trn.pc_rdata == cfg.nmi_handler_addr) begin
-            bit [XLEN-1:0] csr_mcause = mon_trn.csrs["mcause"].get_csr_retirement_data();
-
-            mon_trn.insn_nmi = 1;
-            mon_trn.insn_interrupt_id = { 1'b0, csr_mcause[XLEN-2:0] };
-         end
-         else if (mon_trn.intr) begin
-             //bit [XLEN-1:0] csr_mcause = mon_trn.csrs["mcause"].get_csr_retirement_data();
-             bit [XLEN-1:0] csr_mcause = mon_trn.csrs["mcause"].rdata;
-
+            // External interrupt
             if (csr_mcause[31]) begin
-               mon_trn.insn_interrupt    = 1;
-               mon_trn.insn_interrupt_id = { 1'b0, csr_mcause[XLEN-2:0] };
+               // NMI - Load fault
+               if (cfg.nmi_load_fault_enabled && csr_mcause[XLEN-2:0] == cfg.nmi_load_fault_cause) begin
+                  mon_trn.insn_nmi_load_fault = 1;
+               end
+               // NMI - Store fault
+               else if (cfg.nmi_store_fault_enabled && csr_mcause[XLEN-2:0] == cfg.nmi_store_fault_cause) begin
+                  mon_trn.insn_nmi_store_fault = 1;
+               end
+               // External interrupt
+               else begin
+                  mon_trn.insn_interrupt    = 1;
+                  mon_trn.insn_interrupt_id = { 1'b0, csr_mcause[XLEN-2:0] };
+               end
             end
          end
 
+         dcsr_ret_data = mon_trn.csrs["dcsr"].get_csr_retirement_data();
          // In debug mode, detect NMIP event for a data bus error
-         if (cfg.nmi_handler_enabled &&
-             mon_trn.dbg_mode &&
+         if (mon_trn.dbg_mode &&
              !last_dcsr_nmip &&
-             mon_trn.csrs["dcsr"].get_csr_retirement_data()[3]) begin
+             mon_trn.nmip[0] &&
+             dcsr_ret_data[3])
+         begin
             `uvm_info("RVFIMON", $sformatf("Debug NMIP"), UVM_LOW);
-            mon_trn.insn_nmi = 1;
+
+            if (mon_trn.nmip[1] == 0) begin
+               mon_trn.insn_nmi_load_fault = 1;
+            end else begin
+               mon_trn.insn_nmi_store_fault = 1;
+            end
          end
 
          // Detect instruction bus fault
@@ -218,7 +229,8 @@ task uvma_rvfi_instr_mon_c::monitor_rvfi_instr();
             `uvm_info("RVFIMON", $sformatf("Detected bus fault"), UVM_LOW)
          end
 
-         last_dcsr_nmip = mon_trn.csrs["dcsr"].get_csr_retirement_data()[3];
+         // Latch the last DCSR NMIP bit to detect positive assertion of dcsr.nmip
+         last_dcsr_nmip = dcsr_ret_data[3];
 
          `uvm_info(log_tag, $sformatf("%s", mon_trn.convert2string()), UVM_HIGH);
 

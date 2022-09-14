@@ -25,8 +25,12 @@ module uvmt_cv32e40s_debug_assert
   // ---------------------------------------------------------------------------
   // Local parameters
   // ---------------------------------------------------------------------------
-    localparam WFI_INSTR_MASK = 32'hffffffff;
-    localparam WFI_INSTR_DATA = 32'h10500073;
+  localparam WFI_INSTR_MASK     = 32'h ffff_ffff;
+  localparam WFI_INSTR_OPCODE     = 32'h 1050_0073;
+  localparam EBREAK_INSTR_OPCODE  = 32'h 0010_0073;
+  localparam CEBREAK_INSTR_OPCODE = 32'h 0000_9002;
+  localparam DRET_INSTR_OPCODE    = 32'h 7B20_0073;
+
   // ---------------------------------------------------------------------------
   // Local variables
   // ---------------------------------------------------------------------------
@@ -59,13 +63,15 @@ module uvmt_cv32e40s_debug_assert
 
   assign cov_assert_if.is_ebreak =
     cov_assert_if.wb_valid
+    && (cov_assert_if.wb_stage_instr_rdata_i == EBREAK_INSTR_OPCODE)
     && !cov_assert_if.wb_err
-    && (cov_assert_if.wb_stage_instr_rdata_i == 32'h0010_0073);
+    && (cov_assert_if.wb_mpu_status == MPU_OK);
 
   assign cov_assert_if.is_cebreak =
     cov_assert_if.wb_valid
+    && (cov_assert_if.wb_stage_instr_rdata_i == CEBREAK_INSTR_OPCODE)
     && !cov_assert_if.wb_err
-    && (cov_assert_if.wb_stage_instr_rdata_i == 32'h0000_9002);
+    && (cov_assert_if.wb_mpu_status == MPU_OK);
 
   assign cov_assert_if.is_mulhsu =
     cov_assert_if.wb_stage_instr_valid_i
@@ -160,45 +166,33 @@ module uvmt_cv32e40s_debug_assert
         else `uvm_error(info_tag,$sformatf("Debug mode with wrong cause after ebreak, case = %d",cov_assert_if.dcsr_q[8:6]));
 
 
-    // c.ebreak without dcsr.ebreakm results in exception at mtvec
-    // Exclude single stepping as the sequence gets very complicated
+    // ebreak / c.ebreak without dcsr.ebreakm results in exception at mtvec
+    // (Exclude single stepping as the sequence gets very complicated)
 
-    property p_cebreak_exception;
-        disable iff(!cov_assert_if.rst_ni)
-        $rose(cov_assert_if.is_cebreak) && !cov_assert_if.debug_mode_q
-        && !cov_assert_if.dcsr_q[2] && !cov_assert_if.dcsr_q[15]
+    property p_general_ebreak_exception(ebreak);
+        $rose(ebreak)
+        && !cov_assert_if.debug_mode_q
+        && !cov_assert_if.dcsr_q[2]
+        && !cov_assert_if.dcsr_q[15]
         ##0 (
           (!cov_assert_if.pending_debug && !cov_assert_if.irq_ack_o && !cov_assert_if.pending_nmi)
           throughout (##1 cov_assert_if.wb_valid [->1])
           )
         |->
-        !cov_assert_if.debug_mode_q && (cov_assert_if.mcause_q[30:0] === cv32e40s_pkg::EXC_CAUSE_BREAKPOINT)
-        && (cov_assert_if.mepc_q == pc_at_ebreak) && (cov_assert_if.wb_stage_pc == mtvec_addr);
+        !cov_assert_if.debug_mode_q
+        && (cov_assert_if.mcause_q[30:0] === cv32e40s_pkg::EXC_CAUSE_BREAKPOINT)
+        && (cov_assert_if.mepc_q == pc_at_ebreak)
+        && (cov_assert_if.wb_stage_pc == mtvec_addr);
         // TODO:ropeders need assertions for what happens if cebreak and req/irq?
     endproperty
 
-    a_cebreak_exception: assert property(p_cebreak_exception)
-        else `uvm_error(info_tag,$sformatf("Exception not entered correctly after c.ebreak with dcsr.ebreak=0"));
+    a_cebreak_exception: assert property(
+        p_general_ebreak_exception(cov_assert_if.is_cebreak)
+        ) else `uvm_error(info_tag, $sformatf("Exception not entered correctly after c.ebreak with dcsr.ebreak=0"));
 
-
-    // ebreak without dcsr.ebreakm results in exception at mtvec
-    // Exclude single stepping as the sequence gets very complicated
-
-    property p_ebreak_exception;
-        disable iff(!cov_assert_if.rst_ni)
-        $rose(cov_assert_if.is_ebreak) && !cov_assert_if.dcsr_q[15]
-        && !cov_assert_if.debug_mode_q && !cov_assert_if.dcsr_q[2]
-        ##0 (
-          (!cov_assert_if.pending_debug && !cov_assert_if.irq_ack_o && !cov_assert_if.pending_nmi)
-          throughout (##1 cov_assert_if.wb_valid [->1])
-          )
-        |->
-        !cov_assert_if.debug_mode_q && (cov_assert_if.mcause_q[30:0] === cv32e40s_pkg::EXC_CAUSE_BREAKPOINT)
-        && (cov_assert_if.mepc_q == pc_at_ebreak) && (cov_assert_if.wb_stage_pc == mtvec_addr);
-    endproperty
-
-    a_ebreak_exception: assert property(p_ebreak_exception)
-        else `uvm_error(info_tag,$sformatf("Exception not entered correctly after ebreak with dcsr.ebreak=0"));
+    a_ebreak_exception: assert property(
+        p_general_ebreak_exception(cov_assert_if.is_ebreak)
+        ) else `uvm_error(info_tag, $sformatf("Exception not entered correctly after ebreak with dcsr.ebreak=0"));
 
 
     // c.ebreak during debug mode results in relaunch of debug mode
@@ -271,7 +265,7 @@ module uvmt_cv32e40s_debug_assert
 
     // ECALL in debug mode results in pc->dm_exception_addr_i
     property p_debug_mode_ecall;
-        $rose(cov_assert_if.ecall_insn_i) && cov_assert_if.debug_mode_q
+        $rose(cov_assert_if.sys_ecall_insn_i && cov_assert_if.sys_en_i) && cov_assert_if.debug_mode_q
         |->
         s_conse_next_retire
         ##0 cov_assert_if.debug_mode_q && (cov_assert_if.wb_stage_pc == exception_addr_at_entry);
@@ -400,28 +394,40 @@ module uvmt_cv32e40s_debug_assert
 
     // dret in D-mode will restore pc (if no re-entry or interrupt intervenes)
 
-    sequence s_dmode_dret_pc_ante;  // Antecedent
-        cov_assert_if.debug_mode_q && cov_assert_if.is_dret
-        ##1 (
-          (!cov_assert_if.pending_debug && !cov_assert_if.irq_ack_o && !cov_assert_if.pending_nmi)
-          throughout (cov_assert_if.wb_stage_instr_valid_i [->1])
-          );
-    endsequence
-
     property p_dmode_dret_pc;
-        int dpc; (1, dpc =cov_assert_if.depc_q) ##0
-        s_dmode_dret_pc_ante
-        |->
-        !cov_assert_if.debug_mode_q && (cov_assert_if.wb_stage_pc == dpc)
-        ##0 (cov_assert_if.wb_valid
-            or ##1 (!$changed(cov_assert_if.wb_stage_pc) throughout (cov_assert_if.wb_valid [->1])));
-    endproperty
+        int dpc; (1, dpc =cov_assert_if.rvfi_csr_dpc_rdata)
+        ##0(cov_assert_if.rvfi_valid && cov_assert_if.rvfi_dbg_mode && cov_assert_if.rvfi_insn == DRET_INSTR_OPCODE)
 
-    cov_dmode_dret_pc : cover property(s_dmode_dret_pc_ante |-> (cov_assert_if.depc_q != 0));
+        ##1 cov_assert_if.rvfi_valid[->1] 
+        ##0 (!cov_assert_if.rvfi_intr && !cov_assert_if.rvfi_dbg_mode)
+        |->
+
+        cov_assert_if.rvfi_pc_rdata == dpc;
+    endproperty
 
     a_dmode_dret_pc : assert property(p_dmode_dret_pc)
         else `uvm_error(info_tag, "Dret did not cause correct return from debug mode");
 
+    // dret in D-mode will place dpc in mepc if re-entry is interrupted
+
+    /*
+    //TODO:mateilga reinstate this when the "kill" signal sensitivity in RVFI has been added
+    property p_dmode_dret_pc_int;
+        int dpc; (1, dpc =cov_assert_if.rvfi_csr_dpc_rdata)
+        ##0(cov_assert_if.rvfi_valid && cov_assert_if.rvfi_dbg_mode && cov_assert_if.rvfi_insn == DRET_INSTR_OPCODE)
+
+        ##1 cov_assert_if.rvfi_valid[->1] 
+        ##0 (cov_assert_if.rvfi_intr && !cov_assert_if.rvfi_dbg_mode)
+        |->
+
+        (cov_assert_if.rvfi_csr_mepc_wdata & cov_assert_if.rvfi_csr_mepc_wmask) == dpc;
+
+    endproperty
+
+    a_dmode_dret_pc_int : assert property(p_dmode_dret_pc_int)
+        else `uvm_error(info_tag, "Dret did not save dpc to mepc when return from debug mode was interrupted");
+
+    */
 
     // dret in D-mode will exit D-mode
 
@@ -516,12 +522,42 @@ module uvmt_cv32e40s_debug_assert
         else `uvm_error(info_tag, "Debug mode not entered correctly at reset!");
 
 
+    // Debug vs reset
+
+    a_debug_state_onehot : assert property (
+      $onehot({cov_assert_if.debug_havereset, cov_assert_if.debug_running, cov_assert_if.debug_halted})
+      ) else `uvm_error(info_tag, "Should have exactly 1 of havereset/running/halted");
+
+    cov_havereset_to_running : cover property (
+      (cov_assert_if.debug_havereset  == 1)
+      && (cov_assert_if.debug_running == 0)
+      && (cov_assert_if.debug_halted  == 0)
+      #=#
+      (cov_assert_if.debug_havereset  == 0)
+      && (cov_assert_if.debug_running == 1)
+      && (cov_assert_if.debug_halted  == 0)
+      );
+
+    cov_havereset_to_halted : cover property (
+      (cov_assert_if.debug_havereset  == 1)
+      && (cov_assert_if.debug_running == 0)
+      && (cov_assert_if.debug_halted  == 0)
+      #=#
+      (cov_assert_if.debug_havereset  == 0)
+      && (cov_assert_if.debug_running == 0)
+      && (cov_assert_if.debug_halted  == 1)
+      );
+
+
     // Check that we cover the case where a debug_req_i
     // comes while flushing due to an illegal insn, causing
     // dpc to be set to the exception handler entry addr
+
+    // TODO We have excluded the case where an nmi is taken in the second stage of the antecedent. 
+    //      Make sure this is covered in a debug vs nmi assertion when it is written 
     sequence s_illegal_insn_debug_req_ante;  // Antecedent
         cov_assert_if.wb_illegal && cov_assert_if.wb_valid && !cov_assert_if.debug_mode_q
-        ##1 cov_assert_if.debug_req_i && !cov_assert_if.debug_mode_q;
+        ##1 cov_assert_if.debug_req_i && !cov_assert_if.debug_mode_q && !cov_assert_if.pending_nmi;
     endsequence
 
     sequence s_illegal_insn_debug_req_conse;  // Consequent
@@ -535,29 +571,6 @@ module uvmt_cv32e40s_debug_assert
 
     a_illegal_insn_debug_req : assert property(s_illegal_insn_debug_req_ante |-> s_illegal_insn_debug_req_conse)
         else `uvm_error(info_tag, "Debug mode not entered correctly while handling illegal instruction!");
-
-
-    // Check that "dm_halt_addr_i" is correct
-
-    // Should be stable after "fetch_enable_i"
-    logic fetch_enable_i_sticky;
-    always @(posedge cov_assert_if.clk_i or negedge cov_assert_if.rst_ni) begin
-        if (!cov_assert_if.rst_ni) begin
-            fetch_enable_i_sticky <= 0;
-        end else if (cov_assert_if.fetch_enable_i) begin
-            fetch_enable_i_sticky <= 1;
-        end
-    end
-    a_dmhaltaddr_stable : assert property (
-        fetch_enable_i_sticky
-        |->
-        $stable(cov_assert_if.dm_halt_addr_i)
-        ) else `uvm_error(info_tag, "dm_halt_addr_i changed after fetch_enable_i");
-
-    // Should be word-aligned
-    a_dmhaltaddr_aligned : assert property (
-        cov_assert_if.dm_halt_addr_i[1:0] == 2'b00
-        ) else `uvm_error(info_tag, "TODO");
 
 
     // -------------------------------------------
@@ -655,7 +668,7 @@ module uvmt_cv32e40s_debug_assert
       end
   end
   always@ (posedge cov_assert_if.clk_i)  begin
-      if ((cov_assert_if.illegal_insn_i || cov_assert_if.ecall_insn_i)
+      if ((cov_assert_if.illegal_insn_i || (cov_assert_if.sys_ecall_insn_i && cov_assert_if.sys_en_i))
           && cov_assert_if.pc_set && cov_assert_if.debug_mode_q && cov_assert_if.wb_valid)
       begin
           exception_addr_at_entry = {cov_assert_if.dm_exception_addr_i[31:2], 2'b00};
@@ -664,15 +677,17 @@ module uvmt_cv32e40s_debug_assert
 
     assign cov_assert_if.addr_match   = (cov_assert_if.wb_stage_pc == cov_assert_if.tdata2);
     assign cov_assert_if.dpc_will_hit = (cov_assert_if.depc_n == cov_assert_if.tdata2);
+    assign cov_assert_if.pending_enabled_irq = |(cov_assert_if.irq_i & cov_assert_if.mie_q);
     assign cov_assert_if.is_wfi =
         cov_assert_if.wb_valid
-        && ((cov_assert_if.wb_stage_instr_rdata_i & WFI_INSTR_MASK) == WFI_INSTR_DATA)
-        && !cov_assert_if.wb_err;
-    assign cov_assert_if.pending_enabled_irq = |(cov_assert_if.irq_i & cov_assert_if.mie_q);
+        && ((cov_assert_if.wb_stage_instr_rdata_i & WFI_INSTR_MASK) == WFI_INSTR_OPCODE)
+        && !cov_assert_if.wb_err
+        && (cov_assert_if.wb_mpu_status == MPU_OK);
     assign cov_assert_if.is_dret =
         cov_assert_if.wb_valid
-        && (cov_assert_if.wb_stage_instr_rdata_i == 32'h 7B20_0073)
-        && !cov_assert_if.wb_err;
+        && (cov_assert_if.wb_stage_instr_rdata_i == DRET_INSTR_OPCODE)
+        && !cov_assert_if.wb_err
+        && (cov_assert_if.wb_mpu_status == MPU_OK);
 
 
     // Track which debug cause should be expected
